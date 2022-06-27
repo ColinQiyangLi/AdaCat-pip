@@ -1,47 +1,26 @@
 
 import torch
-from torch.distributions import Distribution, constraints, AffineTransform, TransformedDistribution
+from torch.distributions import Distribution, constraints, Normal
+from torch.distributions.utils import broadcast_all
 import torch.nn.functional as F
-import numpy as np
-from functools import reduce
-
-def to_numpy(*args):
-    return [arg.numpy() for arg in args]
-
-def product(shape):
-    if len(shape) == 0: return 1
-    return reduce(lambda x, y: x * y, shape)
-
-def gather_l(x, v):
-    shape = v.shape
-    dim = len(x.shape)
-    b_shape, f_shape = v.shape[:-dim+1], v.shape[-dim+1:]
-    b, f = product(b_shape), product(f_shape)
-    assert (x.shape[:-1] == f_shape)
-
-    v = v.view(b, f).t()
-    x = x.view(f, -1)
-
-    return x.gather(-1, v).t().reshape(*b_shape, *f_shape)
-
-def searchsorted_l(x, v):
-    shape = v.shape
-    dim = len(x.shape)
-    b_shape, f_shape = v.shape[:-dim+1], v.shape[-dim+1:]
-    b, f = product(b_shape), product(f_shape)
-    assert x.shape[:-1] == f_shape
-
-    v = v.view(b, f).t()
-    x = x.view(f, -1)
-    return torch.searchsorted(x, v).t().reshape(*b_shape, *f_shape)
 
 class Adacat(Distribution):
-    arg_constraints = {'logits': constraints.real}
+    arg_constraints = {'logits': constraints.real_vector}
     support = constraints.unit_interval
+    has_enumerate_support=False
+    has_rsample=False
 
     @property
     def mean(self):
         return ((self.x_cum - self.x_sizes / 2.) * self.y_sizes).sum(dim=-1)
+
+    @property
+    def variance(self):
+        raise NotImplementedError
+
+    @property
+    def entropy(self):
+        return -((self.log_y_sizes - self.log_x_sizes) * self.y_sizes).sum(dim=-1)
 
     @property
     def x_sizes(self):
@@ -85,117 +64,84 @@ class Adacat(Distribution):
         new._validate_args = self._validate_args
         return new
 
-
-    def sample(self, sample_shape=torch.Size(), zo_ratio=None, top_k=None, level=None, mean_sampling=None):
+    def sample(self, sample_shape=torch.Size()):
         if not isinstance(sample_shape, torch.Size):
             sample_shape = torch.Size(sample_shape)
 
-        # remove bins with low probabilities
+        batch_shape = self.y_sizes.shape[:-1]
         y_probs = self.y_sizes.reshape(-1, self.n_knobs)
-        if zo_ratio is not None or top_k is not None: 
-            assert not (zo_ratio is not None and top_k is not None) and level is None
-            if zo_ratio is not None:
-                nzo = int(self.n_knobs * zo_ratio)
-            if top_k is not None:
-                nzo = self.n_knobs - top_k
-            _, indices = torch.topk(y_probs, k=nzo, dim=-1, largest=False)
-            y_probs.scatter_(dim=-1, index=indices, src=torch.zeros_like(indices).float())
-            
-        if level is not None:
-            y_sizes = self.y_sizes.reshape(-1, self.n_knobs)
-            x_sizes = self.x_sizes.reshape(-1, self.n_knobs)
+        
+        indices = torch.multinomial(y_probs, sample_shape.numel(), True).view(*batch_shape, sample_shape.numel())
 
-            density = y_sizes / x_sizes
-            indices = density.argsort(dim=-1)
-            y_sizes_sorted = y_sizes.gather(dim=-1, index=indices)
-            
-            y_sizes_sorted_prefix = torch.cumsum(y_sizes_sorted, dim=-1)
+        x_right = torch.gather(self.x_cum, -1, indices)
+        x_size = torch.gather(self.x_sizes, -1, indices)
+        x = x_right - x_size * torch.rand_like(x_size)
+        x = x.view(-1, sample_shape.numel()).t().clamp(min=0., max=1.)  # avoid any numerical issue that makes the value go oob
+        if len(sample_shape) + len(batch_shape) == 0:
+            return x.view(-1).squeeze(0)
+        return x.view(*sample_shape, *batch_shape).contiguous()
 
-            sorted_cutoff = torch.searchsorted(y_sizes_sorted_prefix, level * torch.ones_like(y_sizes[:, 0:1]))
+    def log_prob(self, value, smooth_coeff=0.):
+        if self._validate_args:
+            self._validate_sample(value)
+        
+        x_cum, log_y_sizes, log_x_sizes, value = broadcast_all(self.x_cum, self.log_y_sizes, self.log_x_sizes, value.unsqueeze(-1))
 
-            reverse_indices = indices.argsort(dim=-1)
-            mn_indices = torch.arange(0, self.n_knobs).to(x_sizes.device)
+        if smooth_coeff > 0.:
+            value = torch.cat([value, value[..., :1]], dim=-1)
 
-            # be a little bit conservative
-            cutoff_mask = sorted_cutoff - 1 >= reverse_indices
-            # zero out the entries that need to be cut off
+            # gaussian smooth kernel
+            smd = Normal(loc=value, scale=torch.ones_like(value) * smooth_coeff)
+            l = smd.cdf(torch.zeros_like(value))
+            r = smd.cdf(torch.ones_like(value))
+            log_z = (r - l).log()
 
-            reverse_indices[cutoff_mask] = self.n_knobs
-            y_sizes_sorted = torch.nn.functional.pad(y_sizes_sorted, (0, 1))
-            y_probs = y_sizes_sorted.gather(dim=-1, index=reverse_indices)
+            # analytically compute the integral
+            x_cum = F.pad(x_cum, (1, 0))
+            cdfs = smd.cdf(x_cum.clamp(min=0., max=1.))
+            ws = (cdfs[..., 1:] - cdfs[..., :-1]) / (r[..., :-1] - l[..., :-1])
 
-        indices = torch.multinomial(y_probs, sample_shape.numel(), True).t()
-        indices = indices.view(sample_shape.numel(), *self.y_sizes.shape[:-1])
-
-        x_right = gather_l(self.x_cum, indices)
-        x_size = gather_l(self.x_sizes, indices)
-        if mean_sampling:
-            x = x_right - x_size * 0.5
-        else:
-            x = x_right - x_size * torch.rand_like(x_size)
-
-        ret = x.reshape(self._extended_shape(sample_shape))
-
-        return ret
-
-    def _validate_distribution(self, d):
-        assert self.support == d.support
-    
-    def log_prob(self, value):
-        if isinstance(value, Distribution):
-            # if passed in a distribution of value, we compute the expectation of log_prob
-            # the distribution should have the same batch shape as the current distribution
-
-            # self._validate_distribution(value)
-            x_cum = F.pad(self.x_cum, (1, 0))
-            shape = x_cum.size()[:-1]
-            numel = product(shape)
-            x_cum = x_cum.view(-1, self.n_knobs+1).t().view(self.n_knobs+1, *shape)
-            cdfs = value.cdf(x_cum.clamp(min=0., max=1.))
-            ws = (cdfs[1:] - cdfs[:-1]).view(self.n_knobs, numel).t().view(*shape, self.n_knobs)
-            return (ws * (self.log_y_sizes - self.log_x_sizes)).sum(dim=-1)
+            return (ws * (log_y_sizes - log_x_sizes)).sum(dim=-1)
         
         else:
-            # compute this normally
-            if self._validate_args:
-                self._validate_sample(value)
+            
+            value = value[..., :1]
+            indices = torch.searchsorted(x_cum.contiguous(), value).clamp(0, self.n_knobs-1)
 
-            indices = searchsorted_l(self.x_cum, value).clamp(
-                0, self.n_knobs-1)
+            log_x_size = torch.gather(log_x_sizes, -1, indices)
+            log_y_size = torch.gather(log_y_sizes, -1, indices)
 
-            log_x_size = gather_l(self.log_x_sizes, indices)
-            log_y_size = gather_l(self.log_y_sizes, indices)
-
-            return log_y_size - log_x_size
+            return (log_y_size - log_x_size).squeeze(-1)
 
     def cdf(self, value):
         if self._validate_args:
             self._validate_sample(value)
 
-        indices = searchsorted_l(self.x_cum, value).clamp(
-            0, self.n_knobs-1)
-
-        x_cum = gather_l(self.x_cum, indices)
-        y_cum = gather_l(self.y_cum, indices)
-        x_size = gather_l(self.x_sizes, indices)
-        y_size = gather_l(self.y_sizes, indices)
+        x_cum, y_cum, x_sizes, y_sizes, value = broadcast_all(self.x_cum, self.y_cum, self.x_sizes, self.y_sizes, value.unsqueeze(-1))
         
-        return y_cum - (x_cum - value) / x_size * y_size
+        value = value[..., :1]
+        indices = torch.searchsorted(x_cum.contiguous(), value).clamp(0, self.n_knobs-1)
 
+        x_cum = torch.gather(x_cum, -1, indices)
+        y_cum = torch.gather(y_cum, -1, indices)
+        x_size = torch.gather(x_sizes, -1, indices)
+        y_size = torch.gather(y_sizes, -1, indices)
+        
+        return (y_cum - (x_cum - value) / x_size * y_size).squeeze(-1)
 
     def icdf(self, value):
         if self._validate_args:
             self._validate_sample(value)
 
-        indices = searchsorted_l(self.y_cum, value).clamp(
-            0, self.n_knobs-1)
-
-        x_cum = gather_l(self.x_cum, indices)
-        y_cum = gather_l(self.y_cum, indices)
-        x_size = gather_l(self.x_sizes, indices)
-        y_size = gather_l(self.y_sizes, indices)
+        x_cum, y_cum, x_sizes, y_sizes, value = broadcast_all(self.x_cum, self.y_cum, self.x_sizes, self.y_sizes, value.unsqueeze(-1))
         
-        return x_cum - (y_cum - value) / y_size * x_size
+        value = value[..., :1]
+        indices = torch.searchsorted(y_cum.contiguous(), value).clamp(0, self.n_knobs-1)
 
-    def entropy(self):
-        return ((self.log_y_sizes - self.log_x_sizes) * self.x_sizes).sum(dim=-1)
+        x_cum = torch.gather(x_cum, -1, indices)
+        y_cum = torch.gather(y_cum, -1, indices)
+        x_size = torch.gather(x_sizes, -1, indices)
+        y_size = torch.gather(y_sizes, -1, indices)
+        
+        return (x_cum - (y_cum - value) / y_size * x_size).squeeze(-1)
+
