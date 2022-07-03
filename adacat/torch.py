@@ -81,7 +81,7 @@ class Adacat(Distribution):
             return x.view(-1).squeeze(0)
         return x.view(*sample_shape, *batch_shape).contiguous()
 
-    def log_prob(self, value, smooth_coeff=0.):
+    def log_prob(self, value, smooth_coeff=0., eps=1e-6):
         if self._validate_args:
             self._validate_sample(value)
         
@@ -99,7 +99,7 @@ class Adacat(Distribution):
             # analytically compute the integral
             x_cum = F.pad(x_cum, (1, 0))
             cdfs = smd.cdf(x_cum.clamp(min=0., max=1.))
-            ws = (cdfs[..., 1:] - cdfs[..., :-1]) / (r[..., :-1] - l[..., :-1])
+            ws = (cdfs[..., 1:] - cdfs[..., :-1]) / (r[..., :-1] - l[..., :-1] + eps)
 
             return (ws * (log_y_sizes - log_x_sizes)).sum(dim=-1)
         

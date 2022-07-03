@@ -1,5 +1,5 @@
 import torch
-from adacat import Adacat
+from adacat.torch import Adacat
 
 def test_cdf_icdf_consistency(k, batch_shape, sample_shape):
     d = Adacat(torch.randn(*batch_shape, k))

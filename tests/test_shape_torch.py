@@ -1,5 +1,5 @@
 import torch
-from adacat import Adacat
+from adacat.torch import Adacat
 
 def test(k, batch_shape, sample_shape):
     x = Adacat(torch.randn(*batch_shape, k))

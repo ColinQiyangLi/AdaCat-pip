@@ -3,12 +3,12 @@ from setuptools import setup
 setup(
     name = 'adacat',
     packages = ['adacat'],
-    version = '0.2',
+    version = '0.3',
     description = 'Adaptive categorical distribution',
     author='Qiyang Li',
     author_email='colin.qiyang.li@gmail.com',
     url='https://github.com/ColinQiyangLi/AdaCat-pip',
-    dependencies = ["torch"],
+    dependencies = [],
     classifiers=[
         'Programming Language :: Python',
         'Programming Language :: Python :: 3',

@@ -2,7 +2,7 @@
 pip package for adaptive categorical distribution (Adacat) proposed in [ADACAT: Adaptive Categorical Discretization for Autoregressive Models](https://openreview.net/forum?id=HMzzPOLs9l5).
 
 - installation: `pip install adacat`
-- see example of usage in `demo.py`/`demo.ipynb`
+- see usage in `demo-(jax/torch).py`/`demo-(jax/torch).ipynb`
 
 ![alt text for screen readers](adacat_1d.png "Density Estimation with AdaCat")
 

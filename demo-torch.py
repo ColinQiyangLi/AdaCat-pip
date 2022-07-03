@@ -1,6 +1,6 @@
 
 import torch
-from adacat import Adacat
+from adacat.torch import Adacat
 from torch.distributions import Normal
 
 # create a mixture of two Truncated Gaussians with a support of [0, 1]
@@ -25,8 +25,8 @@ class TruncatedNormal:
     def log_prob(self, x):
         return self.d.log_prob(x) - self.log_z
 
-g1 = TruncatedNormal(torch.tensor([0.2]), torch.tensor([0.04]))
-g2 = TruncatedNormal(torch.tensor([0.7]), torch.tensor([0.4]))
+g1 = TruncatedNormal(torch.tensor(0.2), torch.tensor(0.04))
+g2 = TruncatedNormal(torch.tensor(0.7), torch.tensor(0.4))
 
 # sampling function
 def sample_mixture(shape):
@@ -45,7 +45,7 @@ k = 10  # use 10 components
 params = torch.nn.Parameter(torch.zeros(k * 2))
 optim = torch.optim.Adam([params], lr=0.001)
 
-n_its = 1000
+n_its = 10000
 bs = 200
 
 for _ in range(1, n_its + 1):
@@ -77,13 +77,15 @@ q_prob = q.log_prob(xs).exp().detach().numpy()
 p_prob = compute_prob(xs).detach().numpy()
 
 qs = q.sample((10000,)).detach().numpy()
+ps = sample_mixture((10000,)).numpy()
 
 xs = xs.numpy()
 
 ax.clear()
 ax.plot(xs, p_prob,    "--", color="black", alpha=0.80, label="Target Density")
 ax.plot(xs, q_prob,    "-",  color="blue",  alpha=0.80, label="AdaCat analytic density")
-ax.hist(qs, range=(0., 1.), density=True, color="green", alpha=0.25, label="AdaCat sample histogram", bins=100)
+ax.hist(ps, range=(0., 1.), density=True, color="black", alpha=0.25, label="Target sample histogram", bins=100)
+ax.hist(qs, range=(0., 1.), density=True, color="blue", alpha=0.25, label="AdaCat sample histogram", bins=100)
 
 ax.set_ylim(0., 6.)
 ax.set_xlim(0., 1.)
