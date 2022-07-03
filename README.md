@@ -18,3 +18,6 @@ year={2022},
 url={https://openreview.net/forum?id=HMzzPOLs9l5}
 }
 ```
+
+## Acknowledgements
+Thank Ilya Kostrikov for help on the JAX implementation of Adacat.
