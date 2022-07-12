@@ -48,7 +48,7 @@ class Adacat(distrax.Distribution):
         batch_shape = self.h_logits.shape[:-1]
         length = len(batch_shape)
         y = jax.random.uniform(key, (n,) + batch_shape)
-        return self.icdf(y)
+        return jnp.clip(self.icdf(y), 0., 1.)
 
     def smooth_log_prob(self, value):
         value = value[..., None]        

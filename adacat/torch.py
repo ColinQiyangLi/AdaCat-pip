@@ -69,17 +69,8 @@ class Adacat(Distribution):
             sample_shape = torch.Size(sample_shape)
 
         batch_shape = self.y_sizes.shape[:-1]
-        y_probs = self.y_sizes.reshape(-1, self.n_knobs)
-        
-        indices = torch.multinomial(y_probs, sample_shape.numel(), True).view(*batch_shape, sample_shape.numel())
-
-        x_right = torch.gather(self.x_cum, -1, indices)
-        x_size = torch.gather(self.x_sizes, -1, indices)
-        x = x_right - x_size * torch.rand_like(x_size)
-        x = x.view(-1, sample_shape.numel()).t().clamp(min=0., max=1.)  # avoid any numerical issue that makes the value go oob
-        if len(sample_shape) + len(batch_shape) == 0:
-            return x.view(-1).squeeze(0)
-        return x.view(*sample_shape, *batch_shape).contiguous()
+        value = torch.rand(sample_shape + batch_shape, device=self.y_sizes.device)
+        return self.icdf(value).clamp(0., 1.)
 
     def log_prob(self, value, smooth_coeff=0., eps=1e-6):
         if self._validate_args:
