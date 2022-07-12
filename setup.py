@@ -3,7 +3,7 @@ from setuptools import setup
 setup(
     name = 'adacat',
     packages = ['adacat'],
-    version = '0.4.1',
+    version = '0.4.2',
     description = 'Adaptive categorical distribution',
     author='Qiyang Li',
     author_email='colin.qiyang.li@gmail.com',
